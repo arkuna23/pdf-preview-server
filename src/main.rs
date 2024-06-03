@@ -1,16 +1,12 @@
-use std::{
-    env, io,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{env, io, path::PathBuf, sync::Arc};
 
 use actix_files::NamedFile;
 use actix_web::{get, web::Data, App, HttpServer, Responder};
-use actix_web_lab::sse;
+use actix_web_lab::{respond::Html, sse};
 use actix_web_sse::Broadcaster;
 use log::{info, warn};
 
-use notify::{Config, RecommendedWatcher, Watcher};
+use notify::{RecommendedWatcher, Watcher};
 use tokio::runtime::Handle;
 
 struct AppState {
@@ -27,22 +23,22 @@ async fn sse_listen(_: Data<AppState>, broadcaster: Data<Arc<Broadcaster>>) -> i
     broadcaster.new_client(sse::Data::new("connected")).await
 }
 
-fn watch_file(broadcaster: Data<Arc<Broadcaster>>, file_path: &Path) -> RecommendedWatcher {
+#[get("/")]
+async fn index() -> impl Responder {
+    Html::new(include_str!("index.html"))
+}
+
+async fn create_watcher(broadcaster: Data<Arc<Broadcaster>>) -> RecommendedWatcher {
     let handle = Handle::current();
-    let mut watcher = RecommendedWatcher::new(
-        move |res: notify::Result<notify::Event>| {
-            if let Ok(event) = res {
-                if event.kind.is_modify() {
-                    handle.block_on(broadcaster.broadcast("update"));
-                }
-            };
-        },
-        Config::default(),
-    )
+    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            if event.kind.is_modify() {
+                info!("file modified");
+                handle.block_on(broadcaster.broadcast("update"));
+            }
+        };
+    })
     .unwrap();
-    watcher
-        .watch(file_path, notify::RecursiveMode::Recursive)
-        .unwrap();
 
     watcher
 }
@@ -66,14 +62,18 @@ async fn main() -> io::Result<()> {
         warn!("PDF file should have a .pdf extension, are you sure this is a PDF file?");
     }
     let broadcaster = Data::new(Broadcaster::create());
-    watch_file(broadcaster.clone(), &state.pdf_path);
+    let mut watcher = create_watcher(broadcaster.clone()).await;
 
+    watcher
+        .watch(&state.pdf_path, notify::RecursiveMode::NonRecursive)
+        .unwrap();
     let server = HttpServer::new(move || {
         App::new()
             .app_data(state.clone())
             .app_data(broadcaster.clone())
             .service(get_pdf)
             .service(sse_listen)
+            .service(index)
     })
     .workers(2)
     .bind(("127.0.0.1", 8080))?
