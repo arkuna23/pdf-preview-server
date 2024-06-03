@@ -1,13 +1,24 @@
-use std::{env, io, path::PathBuf, sync::Arc};
+use std::{
+    env, io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use actix_files::NamedFile;
-use actix_web::{get, web::Data, App, HttpServer, Responder};
-use actix_web_lab::{respond::Html, sse};
+use actix_web::{get, post, web::Data, App, HttpServer, Responder};
+
+use actix_web_lab::{
+    respond::Html,
+    sse::{self},
+};
 use actix_web_sse::Broadcaster;
 use log::{info, warn};
 
-use notify::{RecommendedWatcher, Watcher};
-use tokio::runtime::Handle;
+use notify::{event::ModifyKind, EventKind, RecommendedWatcher, Watcher};
+use tokio::{
+    runtime::Handle,
+    sync::mpsc::{self, Sender},
+};
 
 struct AppState {
     pdf_path: PathBuf,
@@ -28,17 +39,37 @@ async fn index() -> impl Responder {
     Html::new(include_str!("index.html"))
 }
 
-async fn create_watcher(broadcaster: Data<Arc<Broadcaster>>) -> RecommendedWatcher {
+#[post("/stop")]
+async fn stop(stop_tx: Data<Sender<()>>) -> impl Responder {
+    stop_tx.send(()).await.unwrap();
+    "Server stopped"
+}
+
+async fn create_watcher(broadcaster: Data<Arc<Broadcaster>>, path: &Path) -> RecommendedWatcher {
     let handle = Handle::current();
-    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(event) = res {
-            if event.kind.is_modify() {
-                info!("file modified");
-                handle.block_on(broadcaster.broadcast("update"));
-            }
+    let file_name = path.file_name().unwrap().to_owned();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        let Ok(event) = res else {
+            return;
         };
+        let EventKind::Modify(ModifyKind::Data(_)) = event.kind else {
+            return;
+        };
+
+        if event
+            .paths
+            .iter()
+            .filter_map(|r| r.file_name())
+            .any(|p| p == file_name)
+        {
+            info!("file modified");
+            handle.block_on(broadcaster.broadcast("update"));
+        }
     })
     .unwrap();
+    watcher
+        .watch(path.parent().unwrap(), notify::RecursiveMode::NonRecursive)
+        .unwrap();
 
     watcher
 }
@@ -58,27 +89,38 @@ async fn main() -> io::Result<()> {
     let state = Data::new(AppState {
         pdf_path: args.next().unwrap().into(),
     });
-    if !state.pdf_path.ends_with(".pdf") {
+    if state.pdf_path.extension().unwrap() != "pdf" {
         warn!("PDF file should have a .pdf extension, are you sure this is a PDF file?");
     }
     let broadcaster = Data::new(Broadcaster::create());
-    let mut watcher = create_watcher(broadcaster.clone()).await;
+    let mut watcher = create_watcher(broadcaster.clone(), &state.pdf_path).await;
 
-    watcher
-        .watch(&state.pdf_path, notify::RecursiveMode::NonRecursive)
-        .unwrap();
+    let state_copy = state.clone();
+    let (stop_tx, mut stop_rx) = mpsc::channel(1);
     let server = HttpServer::new(move || {
         App::new()
-            .app_data(state.clone())
+            .app_data(Data::new(stop_tx.clone()))
+            .app_data(state_copy.clone())
             .app_data(broadcaster.clone())
             .service(get_pdf)
             .service(sse_listen)
             .service(index)
+            .service(stop)
     })
     .workers(2)
     .bind(("127.0.0.1", 8080))?
     .run();
 
+    let handle = server.handle();
+    tokio::spawn(async move {
+        if let Some(()) = stop_rx.recv().await {
+            info!("Stopping server");
+            handle.stop(false).await;
+        }
+    });
+
     info!("Server running on http://127.0.0.1:8080");
-    server.await
+    let res = server.await;
+    watcher.unwatch(state.pdf_path.parent().unwrap()).unwrap();
+    res
 }

@@ -5,22 +5,30 @@
     <meta http-equiv="X-UA-Compatible" content="ie=edge" />
     <title>PDF Live Viewer</title>
     <style>
-      p {
-        margin-top: 0.5em;
-        margin-bottom: 0.5em;
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: scroll;
       }
     </style>
   </head>
   <body>
-    <div id="root"></div>
+    <embed
+      id="pdf"
+      src="/pdf"
+      type="application/pdf"
+      width="100%"
+      height="100%"
+    />
     <script>
-      let root = document.getElementById("root");
+      let pdf = document.getElementById("pdf");
       let events = new EventSource("/listen");
       events.onmessage = (event) => {
-        let data = document.createElement("p");
-        let time = new Date().toLocaleTimeString();
-        data.innerText = time + ": " + event.data;
-        root.appendChild(data);
+        if (event.data === "update") {
+          pdf.src = pdf.src;
+        }
       };
     </script>
   </body>
