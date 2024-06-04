@@ -12,7 +12,7 @@ use actix_web_lab::{
     sse::{self},
 };
 use actix_web_sse::Broadcaster;
-use log::{info, warn};
+use log::{error, info, warn};
 
 use notify::{event::ModifyKind, EventKind, RecommendedWatcher, Watcher};
 use tokio::{
@@ -74,11 +74,13 @@ async fn create_watcher(broadcaster: Data<Arc<Broadcaster>>, path: &Path) -> Rec
     watcher
 }
 
+const DEFAULT_PORT: u16 = 8999;
+
 #[actix_web::main]
 async fn main() -> io::Result<()> {
     let mut args = env::args();
     if args.len() < 2 {
-        println!("Usage: {} <pdf_path>", args.next().unwrap());
+        println!("Usage: {} <pdf_path> [port]", args.next().unwrap());
     }
     args.next();
     if env::var("RUST_LOG").is_err() {
@@ -89,6 +91,15 @@ async fn main() -> io::Result<()> {
     let state = Data::new(AppState {
         pdf_path: args.next().unwrap().into(),
     });
+    let port = if let Some(port) = args.next() {
+        port.parse().unwrap_or_else(|_| {
+            error!("invalid port, using default port");
+            DEFAULT_PORT
+        })
+    } else {
+        DEFAULT_PORT
+    };
+
     if state.pdf_path.extension().unwrap() != "pdf" {
         warn!("PDF file should have a .pdf extension, are you sure this is a PDF file?");
     }
@@ -108,7 +119,7 @@ async fn main() -> io::Result<()> {
             .service(stop)
     })
     .workers(2)
-    .bind(("127.0.0.1", 8080))?
+    .bind(("127.0.0.1", port))?
     .run();
 
     let handle = server.handle();
@@ -119,7 +130,7 @@ async fn main() -> io::Result<()> {
         }
     });
 
-    info!("Server running on http://127.0.0.1:8080");
+    info!("Server running on http://127.0.0.1:{}", port);
     let res = server.await;
     watcher.unwatch(state.pdf_path.parent().unwrap()).unwrap();
     res
