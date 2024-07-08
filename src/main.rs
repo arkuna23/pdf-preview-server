@@ -81,6 +81,7 @@ async fn main() -> io::Result<()> {
     let mut args = env::args();
     if args.len() < 2 {
         println!("Usage: {} <pdf_path> [port]", args.next().unwrap());
+        return Ok(());
     }
     args.next();
     if env::var("RUST_LOG").is_err() {
@@ -100,7 +101,7 @@ async fn main() -> io::Result<()> {
         DEFAULT_PORT
     };
 
-    if state.pdf_path.extension().unwrap() != "pdf" {
+    if state.pdf_path.extension().unwrap_or_default() != "pdf" {
         warn!("PDF file should have a .pdf extension, are you sure this is a PDF file?");
     }
     let broadcaster = Data::new(Broadcaster::create());
